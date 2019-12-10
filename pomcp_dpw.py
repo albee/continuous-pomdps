@@ -54,6 +54,6 @@ def simulate(state, belief_node, depth, sim):
 	action_node.Q += ((total-action_node.Q)/action_node.num_visits)
 	return total
 
-# Runs a simulation
+# Runs a simulation with a defined rollout policy
 def rollout(state, belief_node, depth, sim):
 	return None

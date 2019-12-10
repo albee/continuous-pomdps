@@ -23,13 +23,16 @@ def simulate(state, belief_node, depth, sim):
 	action_node = common.action_prog_widen(belief_node, sim)
 
 	# DPW limit
-	k_obs = 1
-	alpha_obs = 1
+	k_obs = 3.0
+	alpha_obs = 1.0/30
 	N = action_node.num_visits
 	child_obs_limit = k_obs*(N**alpha_obs)
+	# print child_obs_limit
 
 	if action_node.num_children() <= child_obs_limit:  # okay to simulate
 		state_next, obs, reward = sim.set_state_and_simulate(state, action_node.data)
+		if reward > 100:
+			print reward
 		obs_node = action_node.add_child(obs, False)  # add an observation node, need to check if it already exists
 		obs_node.num_gens += 1
 		obs_node.associated_states.append(state_next)
@@ -44,13 +47,13 @@ def simulate(state, belief_node, depth, sim):
 		obs = obs_node.data
 		state_next = obs_node.choose_simulated_state()
 		reward = sim.set_state_and_get_reward(state, action_node.data, state_next)
-		total = reward + sim.gamma*simulate(state_next, obs_node, depth-1)
+		total = reward + sim.gamma*simulate(state_next, obs_node, depth-1, sim)
 
 	belief_node.num_visits += 1
 	action_node.num_visits += 1
 	action_node.Q += ((total-action_node.Q)/action_node.num_visits)
 	return total
 
-# Runs a simulation
+# Runs a simulation with a defined rollout policy
 def rollout(state, belief_node, depth, sim):
 	return None

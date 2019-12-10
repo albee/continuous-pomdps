@@ -15,7 +15,7 @@ from shapely.geometry import box, Polygon
 from shapely.affinity import translate
 
 class DoubleInt:
-    def __init__(self, x_min, x_max, y_min, y_max, offsets, obstacles, goals, dt, init_belief):
+    def __init__(self, x_min, y_min, x_max, y_max, offsets, obstacles, goals, dt, init_belief):
         self.mass_mean = 1.0
         self.mass_covar = 0.1
         self.mass_actual = 1.0
@@ -41,7 +41,7 @@ class DoubleInt:
                 ))
 
         # Self geometry
-        self.offsets = [-1, -1, 1, 1]  # 2D geometry offsets (minx, miny, maxx, maxy)
+        self.offsets = offsets  # 2D geometry offsets (minx, miny, maxx, maxy)
         self.geometry = box(self.state[0]+offsets[0], self.state[1]+offsets[1], self.state[0]+offsets[2], self.state[1]+offsets[3])
         self.obstacles = obstacles
         self.goals = goals
@@ -55,7 +55,7 @@ class DoubleInt:
     def reward(self, last_state, action):
         reward = 0
         if self.goal_check():
-            reward = 10000
+            reward = 1000
         elif self.collision_check():
             reward = -50
         else:
@@ -75,15 +75,35 @@ class DoubleInt:
         z = np.add(self.state, np.random.normal(0, var, 4).reshape(-1,1))
         return z, 0
 
-    # Transition the state and update the internal value
-    def transition_certain(self, uk):     
+    # Creates a feasible action (within thruster constraints)
+    def generate_action(self):
+        u_min = -5.0
+        u_max = 5.0
+        diff = u_max-u_min
+        rand_action = np.random.rand(2,1)*(diff) - diff/2
+        return rand_action
+
+    # Transition the state, return new state
+    def dynamics_prop(self, uk, certain=True):
+        var = 0.01
         A = self.A; B = self.B; xk = self.state; dt = self.dt
 
-        dx = (np.matmul(A, xk) + np.matmul(B, uk))*dt  # Euler integration
-        xk1 = xk + dx
+        if certain == True:
+            dx = (np.matmul(A, xk) + np.matmul(B, uk))*dt  # Euler integration
+            xk1 = xk + dx
+        else:
+            dx = (np.matmul(A, xk) + np.matmul(B, uk))*dt  # Euler integration
+            xk1 = np.add(xk + dx, np.random.normal(0, var, 4).reshape(-1,1))
+        return xk1, dx
 
+    # Transition the state and update the internal value
+    def transition_certain(self, uk): 
+        xk = self.state    
+        xk1, dx = self.dynamics_prop(uk, True) 
         self.state = xk1
-        print self.reward(xk, uk)
+        
+        # Evaluate reward
+        reward = self.reward(xk, uk)
 
         # Goal and obstacle checks
         if self.collision_check():
@@ -94,22 +114,10 @@ class DoubleInt:
             return None  # signals complete
         return xk1
 
-    # Creates a feasible action (within thruster constraints)
-    def generate_action(self):
-        u_min = -5.0
-        u_max = 5.0
-        diff = u_max-u_min
-        rand_action = np.random.rand(2,1)*(diff) - diff/2
-        return rand_action
-
-    # Transition the state and update the internal value
-    def transition_stoc(self, uk):     
-        var = 0.01
-        A = self.A; B = self.B; xk = self.state; dt = self.dt
-
-        dx = (np.matmul(A, xk) + np.matmul(B, uk))*dt  # Euler integration
-        xk1 = np.add(xk + dx, np.random.normal(0, var, 4).reshape(-1,1))
-
+    # Transition the state and update the internal value, uncertain
+    def transition_stoc(self, uk):   
+        xk = self.state    
+        xk1, dx = self.dynamics_prop(uk, False) 
         self.state = xk1
 
         # Evaluate reward
@@ -118,9 +126,10 @@ class DoubleInt:
         # Goal and obstacle checks
         if self.collision_check():
             self.state = xk
+            return self.state, reward, self.param
         self.geometry = translate(self.geometry, xoff=dx[0], yoff=dx[1])  # update the robot geometry position
 
-        return xk1, reward, self.param
+        return self.state, reward, self.param
 
         # Can add in "action" to resolve uncertainty?
 
@@ -214,4 +223,3 @@ class DoubleInt:
            self.state[1] > self.dims[2] and self.state[1] < self.dims[3]:
            return True
         return False
-

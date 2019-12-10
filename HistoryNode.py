@@ -62,3 +62,10 @@ class HistoryNode:
 					last = plt.plot(state[0], state[1], marker='o', markersize=3, color="red")
 				child.plot_tree(fig)
 		return fig
+
+	# Return some information from every node in the tree
+	def traverse_tree(self):
+		if not self.is_action_node:
+			print self.num_gens
+		for child in self.children:
+			child.traverse_tree()
