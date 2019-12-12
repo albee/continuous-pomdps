@@ -13,32 +13,41 @@ import numpy as np
 import matplotlib.pyplot as plt
 from shapely.geometry import box, Polygon
 from shapely.affinity import translate
+import scipy.stats as stats
+from scipy.spatial import distance
 
 class DoubleInt:
     def __init__(self, x_min, y_min, x_max, y_max, offsets, obstacles, goals, dt, init_belief):
-        self.mass_mean = 1.0
-        self.mass_covar = 0.1
-        self.mass_actual = 1.0
+        self.mass_mean = 0.5
+        self.mass_covar = 0.0001
+        self.mass_actual = 0.5
         self.dims = [x_min, x_max, y_min, y_max]
 
-        self.state = init_belief.mean # initial condition, [x; y; theta; xdot; ydot; thetadot]
+        # POMDP Model Information
+        self.state = init_belief.mean # initial condition, [x; y; xdot; ydot]
         self.param = [self.mass_mean]
 
+        # Nominal transition dynamics
         self.dt = dt
-        self.A = np.vstack((
-                    np.array([
-                    [0, 0, 1, 0],
-                    [0, 0, 0, 1]]),
-                    np.zeros((2,4))
-                ))
+        self.update_mass(self.mass_mean, self.mass_covar)
 
-        self.B = np.vstack((
-                    np.array([
-                    [1/self.mass_mean*dt, 0],
-                    [0, 1/self.mass_mean*dt],
-                    [1/self.mass_mean, 0],
-                    [0, 1/self.mass_mean]]) 
-                ))
+        self.gamma = 0.99  # discount factor
+
+        # Observation and transition function disturbances
+        self.obs_covar = np.array([
+                                [0.02,0,0,0],
+                                [0,0.02,0,0],
+                                [0,0,0.005,0],
+                                [0,0,0,0.005],
+                                ])
+        self.transition_covar = np.array([
+                                [0.001,0,0,0],
+                                [0,0.001,0,0],
+                                [0,0,0.1,0],
+                                [0,0,0,0.1],
+                                ])
+        self.obs_disturbance = stats.multivariate_normal(np.zeros(4), self.obs_covar)  # a multivariate normal object
+        self.transition_disturbance = stats.multivariate_normal(np.zeros(4), self.transition_covar)  # a multivariate normal object
 
         # Self geometry
         self.offsets = offsets  # 2D geometry offsets (minx, miny, maxx, maxy)
@@ -49,19 +58,71 @@ class DoubleInt:
         # For plotting
         self.last_robot = None
 
-        self.gamma = 0.99
+    # Updates the system mass and the transition dynamics
+    def update_mass(self, mass_mean, mass_covar):
+        self.mass_mean = mass_mean
+        self.mass_covar = mass_covar
+        self.param_disturbance = stats.multivariate_normal(self.mass_mean, self.mass_covar)
+        dt = self.dt
+
+        self.A = np.vstack((
+                    np.array([
+                    [0, 0, 1, 0],
+                    [0, 0, 0, 1]]),
+                    np.zeros((2,4))
+                ))
+
+        self.B = np.vstack((
+                    np.array([
+                    [1/self.mass_actual*dt, 0],
+                    [0, 1/self.mass_actual*dt],
+                    [1/self.mass_actual, 0],
+                    [0, 1/self.mass_actual]]) 
+                ))
+
+
+    # Randomly sample from the mass distribution to get A and B
+    def sample_A_and_B(self):
+        dt = self.dt
+        mass_sample = self.param_disturbance.rvs()
+        self.A = np.vstack((
+                    np.array([
+                    [0, 0, 1, 0],
+                    [0, 0, 0, 1]]),
+                    np.zeros((2,4))
+                ))
+
+        self.B = np.vstack((
+                    np.array([
+                    [1/mass_sample*dt, 0],
+                    [0, 1/mass_sample*dt],
+                    [1/mass_sample, 0],
+                    [0, 1/mass_sample]]) 
+                ))
 
     # Reach the goal, but learn too. Call after transition.
     def reward(self, last_state, action):
         reward = 0
         if self.goal_check():
-            reward = 1000
+            reward = 2000
         elif self.collision_check():
-            reward = -50
+            reward = -4000
         else:
             reward = -1
         if not self.in_bounds():
-            reward = -10
+            reward = -6000
+
+        # HARDCODED GOAL BIAS
+        Q = np.array([
+            [1.0,0,0,0],
+            [0,1.0,0,0],
+            [0,0,0.01,0],
+            [0,0,0,0.01],
+            ])*2.0
+        target_state = np.array([6.5, 12.5, 0, 0]).reshape(-1,1)
+        state_error = last_state - target_state
+        cost = np.matmul(np.matmul(state_error.reshape(1,-1), Q), state_error)[0][0]
+        reward -= cost  # penalize being away from the goal state
 
         return reward
 
@@ -71,17 +132,44 @@ class DoubleInt:
 
     # Return the stochastic observation of the state variables. Parameter is NOT directly observed.
     def observe_stoc(self):
-        var = 0.01
-        z = np.add(self.state, np.random.normal(0, var, 4).reshape(-1,1))
-        return z, 0
+        disturbance = self.obs_disturbance.rvs()
+        likelihood = self.obs_disturbance.pdf(disturbance)
+        disturbance = disturbance.reshape(-1, 1)
+        z = np.add(self.state, disturbance)
+        return z, likelihood
+
+    # Given an observation and a state, determine its likelihood from the observation PDF
+    def likelihood_given_obs_and_state(self, obs, state):
+        disturbance = obs - state
+        likelihood = self.obs_disturbance.pdf(disturbance.reshape(1, -1))  # note that multivariate_normal wants a row vector
+        return likelihood
 
     # Creates a feasible action (within thruster constraints)
     def generate_action(self):
-        u_min = -5.0
-        u_max = 5.0
-        diff = u_max-u_min
-        rand_action = np.random.rand(2,1)*(diff) - diff/2
-        return rand_action
+        option = 2
+        if option == 1:
+            u_min = -5.0
+            u_max = 5.0
+            diff = u_max-u_min
+            action = np.random.rand(2,1)*(diff) - diff/2
+        elif option == 2:
+            actions = np.empty((2,49))
+            x_opts = [-3, -2, -1, 0, 1, 2, 3]
+            y_opts = [-3, -2, -1, 0, 1, 2, 3]
+            cntr = 0
+            for i in range(7):
+                for j in range(7):
+                    actions[0][cntr] = x_opts[i]
+                    actions[1][cntr] = y_opts[j]
+                    cntr+=1
+            probs = np.ones(49)/49
+            idx = np.random.choice(actions.shape[1], 1, p=probs)[0]
+            action = actions[:,idx].reshape(-1,1)
+
+            # randomly sample a do-nothing action that reduces covariance for successors
+            if np.random.rand() > 0.8:
+                action = ["reduce", "reduce"]
+        return action
 
     # Transition the state, return new state
     def dynamics_prop(self, uk, certain=True):
@@ -92,8 +180,10 @@ class DoubleInt:
             dx = (np.matmul(A, xk) + np.matmul(B, uk))*dt  # Euler integration
             xk1 = xk + dx
         else:
+            # self.sample_A_and_B()  # update based on latest mass estimates
             dx = (np.matmul(A, xk) + np.matmul(B, uk))*dt  # Euler integration
-            xk1 = np.add(xk + dx, np.random.normal(0, var, 4).reshape(-1,1))
+            disturbance = self.transition_disturbance.rvs().reshape(-1,1)
+            xk1 = np.add(xk + dx, disturbance)
         return xk1, dx
 
     # Transition the state and update the internal value
@@ -106,9 +196,9 @@ class DoubleInt:
         reward = self.reward(xk, uk)
 
         # Goal and obstacle checks
-        if self.collision_check():
-            self.state = xk
-            return xk
+        # if self.collision_check():
+        #     self.state = xk
+        #     return xk
         self.geometry = translate(self.geometry, xoff=dx[0], yoff=dx[1])  # update the robot geometry position
         if self.goal_check():
             return None  # signals complete
@@ -124,21 +214,37 @@ class DoubleInt:
         reward = self.reward(xk, uk)
 
         # Goal and obstacle checks
-        if self.collision_check():
-            self.state = xk
-            return self.state, reward, self.param
+        # if self.collision_check():
+        #     self.state = xk
+        #     return self.state, reward, self.param
         self.geometry = translate(self.geometry, xoff=dx[0], yoff=dx[1])  # update the robot geometry position
 
         return self.state, reward, self.param
 
-        # Can add in "action" to resolve uncertainty?
-
-    def set_state_and_simulate(self, state, action):
+    def set_state_and_simulate(self, state, action, covar_factor):
+        if action[0] == "reduce":
+            covar_factor*=1.0
+            action = np.array([[0],[0]])
+        self.transition_covar = np.add(
+                                np.array([
+                                [0.001,0,0,0],
+                                [0,0.001,0,0],
+                                [0,0,0.03,0],
+                                [0,0,0,0.03],
+                                ]),
+                                np.array([
+                                [0.001,0,0,0],
+                                [0,0.001,0,0],
+                                [0,0,0.05,0],
+                                [0,0,0,0.05],
+                                ])*covar_factor*50
+                                )
+        self.transition_disturbance = stats.multivariate_normal(np.zeros(4), self.transition_covar)
         self.state = state
         self.geometry = box(self.state[0]+self.offsets[0], self.state[1]+self.offsets[1], self.state[0]+self.offsets[2], self.state[1]+self.offsets[3])
         state_next, reward, _ = self.transition_stoc(action)
-        obs, _ = self.observe_stoc()
-        return state_next, obs, reward
+        obs, likelihood = self.observe_stoc()
+        return state_next, obs, reward, likelihood, covar_factor
 
     """
     Collision checking and plotting
@@ -193,7 +299,7 @@ class DoubleInt:
         self.plot_robot(fig)
 
         plt.show()
-        plt.pause(0.03)
+        plt.pause(0.001)
         return fig
 
     def show_plot(self, fig):
@@ -214,7 +320,8 @@ class DoubleInt:
 
     def goal_check(self):
         for goal in self.goals:
-            if self.collision_check_single(goal) and self.state[2]+self.state[3] < 1.0:
+            # if self.collision_check_single(goal) and self.state[2]+self.state[3] < 1.0:
+            if self.collision_check_single(goal):
                 return True
             return False
 

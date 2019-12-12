@@ -13,7 +13,8 @@ class HistoryNode:
 		self.is_action_node = is_action_node  # either an action node, or a belief node
 		self.Q = 0
 		self.num_gens = 0.0
-		self.associated_states = []
+		self.associated_states = []  # a list of particles generated and associated with a node.
+		self.weightings = []  # a likelihood weighting on each associated particle (state), used by POMCPOW.
 
 	def get_children(self):
 		return self.children()
@@ -50,6 +51,16 @@ class HistoryNode:
 		state_idx = np.random.choice(len(self.associated_states), 1, p=probs)[0]  # choose an observation with probability by occurence rate
 		return self.associated_states[state_idx]
 
+	# Choose a simulated state by its likelihood of occurence, rather than an equal selection. Used by POMCPOW
+	def choose_simulated_state_by_weight(self):
+		if self.is_action_node:
+			print "This should be an obs node!"
+			return None
+		probs = np.asarray(self.weightings)/sum(self.weightings)
+		state_idx = np.random.choice(len(self.associated_states), 1, p=probs)[0]  # choose an observation with probability by occurence rate
+		return self.associated_states[state_idx]
+
+
 	def plot_tree(self, fig):
 		plt.figure(fig.number)
 		points = []
@@ -65,7 +76,7 @@ class HistoryNode:
 
 	# Return some information from every node in the tree
 	def traverse_tree(self):
-		if not self.is_action_node:
-			print self.num_gens
+		if self.is_action_node:
+			print self.Q
 		for child in self.children:
 			child.traverse_tree()

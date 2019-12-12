@@ -30,7 +30,7 @@ def simulate(state, belief_node, depth, sim):
 	# print child_obs_limit
 
 	if action_node.num_children() <= child_obs_limit:  # okay to simulate
-		state_next, obs, reward = sim.set_state_and_simulate(state, action_node.data)
+		state_next, obs, reward, _ = sim.set_state_and_simulate(state, action_node.data)
 		if reward > 100:
 			print reward
 		obs_node = action_node.add_child(obs, False)  # add an observation node, need to check if it already exists
@@ -51,7 +51,7 @@ def simulate(state, belief_node, depth, sim):
 
 	belief_node.num_visits += 1
 	action_node.num_visits += 1
-	action_node.Q += ((total-action_node.Q)/action_node.num_visits)
+	action_node.Q += ((total-action_node.Q)/action_node.num_visits)  # an action node takes its Q as
 	return total
 
 # Runs a simulation with a defined rollout policy
